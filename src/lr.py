@@ -2,6 +2,7 @@ import json
 import asyncio
 import os
 import time
+import traceback
 from typing import List, Dict, Any
 from lr_tree import TreeNode
 
@@ -27,6 +28,10 @@ Reasoning step 2 (s2):
 
 async def get_model_response(prompt, model="gpt-4-turbo-preview", temperature=0.0, max_tokens=1000, stop=None, client=None):
     """Get response from OpenAI API"""
+    start_time = time.time()
+    if client is None:
+        print("Error getting response: client is None")
+        return None
     try:
         response = await client.completions.create(
             model=model,
@@ -38,7 +43,32 @@ async def get_model_response(prompt, model="gpt-4-turbo-preview", temperature=0.
         )
         return response.choices[0].text
     except Exception as e:
-        print(f"Error getting response: {e} {model}")
+        elapsed = time.time() - start_time
+        base_url = getattr(client, "base_url", None)
+        if base_url:
+            print(f"Judge base_url: {base_url}")
+        print(
+            "Completion request failed:",
+            {
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stop": stop,
+                "prompt_chars": len(prompt) if isinstance(prompt, str) else None,
+                "elapsed_s": round(elapsed, 3),
+                "error_type": type(e).__name__,
+            },
+        )
+        status_code = getattr(e, "status_code", None)
+        if status_code is not None:
+            print(f"HTTP status: {status_code}")
+        response_obj = getattr(e, "response", None)
+        if response_obj is not None:
+            try:
+                print(f"Response text: {response_obj.text}")
+            except Exception:
+                print("Response text: <unavailable>")
+        print(traceback.format_exc())
         return None
 
 async def text_accept(response1, response2, last_ending, judge_client, judge_model):

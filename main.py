@@ -19,7 +19,7 @@ parser.add_argument('--prefix', type=str, default='AIME')
 parser.add_argument('--max_depth', type=int, default=4)
 parser.add_argument('--width', type=int, default=1)
 
-parser.add_argument('--model', type=str, default='Qwen/Qwen3-32B')
+parser.add_argument('--model', type=str, default='Qwen/Qwen3-14B')
 parser.add_argument('--draft_model', type=str, default='Qwen/Qwen3-1.7B')
 parser.add_argument('--judge_model', type=str, default='Qwen/Qwen2.5-7B-Instruct')
 parser.add_argument('--judge_port', type=int, default=8000)
@@ -33,6 +33,10 @@ parser.add_argument('--prompt_lookup_max', type=int, default=2)
 
 parser.add_argument('--max_tokens_len', type=int, default=37000)
 parser.add_argument('--use_spec', action='store_true')
+parser.add_argument('--target_dtype', type=str, default=None)
+parser.add_argument('--draft_dtype', type=str, default=None)
+parser.add_argument('--target_quantization', type=str, default=None)
+parser.add_argument('--draft_quantization', type=str, default=None)
 
 args = parser.parse_args()
 
@@ -87,6 +91,27 @@ def load_questions(file_path):
     return questions
 
 
+def resolve_quantization(model_name, override):
+    if override:
+        return override
+    model_name_lower = model_name.lower()
+    if "awq" in model_name_lower:
+        return "awq"
+    if "gptq" in model_name_lower:
+        return "gptq"
+    if "int8" in model_name.lower():
+        return "bitsandbytes"
+    return None
+
+
+def resolve_dtype(model_name, override, default_dtype):
+    if override:
+        return override
+    if "fp8" in model_name.lower():
+        return "auto"
+    return default_dtype
+
+
 async def main():
 
     output_dir = args.prefix + '_' + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '_' + str(random.randint(100000, 999999))
@@ -103,12 +128,17 @@ async def main():
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.target_gpu_id
     # Set environment variables for GPU usage
+    target_quantization = resolve_quantization(args.model, args.target_quantization)
+    draft_quantization = resolve_quantization(args.draft_model, args.draft_quantization)
+    target_dtype = resolve_dtype(args.model, args.target_dtype, "float16")
+    draft_dtype = resolve_dtype(args.draft_model, args.draft_dtype, "float16")
+
     target_model = Targeter(args.model, eos_id=target_config['eos_id'], target_gpu_id=args.target_gpu_id,
-                    enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max}) 
+                    enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max, 'dtype': target_dtype, 'quantization': target_quantization}) 
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.draft_gpu_id
     draft_model = Drafter(args.draft_model, eos_id=draft_config['eos_id'], draft_gpu_id=args.draft_gpu_id,
-                    enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max})
+                    enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max, 'dtype': draft_dtype, 'quantization': draft_quantization})
 
 
     assert target_config['name'] == draft_config['name'], \
@@ -131,4 +161,3 @@ async def main():
 if __name__ == '__main__':
 
     asyncio.run(main())
-

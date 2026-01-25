@@ -3,7 +3,7 @@ from vllm import SamplingParams
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.inputs import PromptType
 from vllm.sampling_params import RequestOutputKind
-from vllm.v1.engine.async_llm import AsyncLLM
+from vllm.engine.async_llm_engine import AsyncLLMEngine
 import asyncio
 import time
 from transformers import AutoTokenizer
@@ -12,11 +12,14 @@ class LLMModel:
     def __init__(self, model, eos_id=None, gpu_ids="", enable_n_gram=False,  vllm_config={}):
         self.gpu_ids = gpu_ids
         self.eos_id = eos_id
-
+        dtype = vllm_config.get("dtype", "float16")
+        quantization = vllm_config.get("quantization")
         if enable_n_gram:
             print('Ngram Setting Up Model: ', [model, gpu_ids])
             engine_args = AsyncEngineArgs(
                 model=model,
+                dtype=dtype,
+                quantization=quantization,
                 enforce_eager=vllm_config['force_eager'],
                 tensor_parallel_size=len(gpu_ids.split(',')),
                 data_parallel_size=1,
@@ -35,6 +38,8 @@ class LLMModel:
 
             engine_args = AsyncEngineArgs(
                 model=model,
+                dtype=dtype,
+                quantization=quantization,
                 enforce_eager=vllm_config['force_eager'],
                 tensor_parallel_size=len(gpu_ids.split(',')),
                 data_parallel_size=1,
@@ -45,7 +50,7 @@ class LLMModel:
             )
     
         self.prefix = model.split('/')[-1].split('-')[0]  # Extract prefix from model name
-        self.engine = AsyncLLM.from_engine_args(engine_args)
+        self.engine = AsyncLLMEngine.from_engine_args(engine_args)
         self.request_id = 1
         self.enable_n_gram = enable_n_gram
         self.tokenizer = AutoTokenizer.from_pretrained(model)
@@ -91,7 +96,7 @@ class LLMModel:
 ### Drafter model
 class Drafter:
     def __init__(self, model, eos_id=None, draft_gpu_id=None, \
-                 enable_n_gram=False, vllm_config={'force_eager': False, 'num_speculative_tokens': 4, 'prompt_lookup_max': 2}):
+                 enable_n_gram=False, vllm_config={'force_eager': False, 'num_speculative_tokens': 4, 'prompt_lookup_max': 2, 'dtype': 'float16'}):
         print('Drafting')
         self.model = LLMModel(model, eos_id, draft_gpu_id, enable_n_gram, vllm_config)
         
@@ -101,7 +106,7 @@ class Drafter:
 ### Target Model 
 class Targeter:
     def __init__(self, model, eos_id=None, target_gpu_id=None, \
-                 enable_n_gram=False, vllm_config={'force_eager': False, 'num_speculative_tokens': 4, 'prompt_lookup_max': 2}):
+                 enable_n_gram=False, vllm_config={'force_eager': False, 'num_speculative_tokens': 4, 'prompt_lookup_max': 2, 'dtype': 'float16'}):
         print('Targeting')
         self.model = LLMModel(model, eos_id, target_gpu_id, enable_n_gram, vllm_config)
         

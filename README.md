@@ -164,12 +164,16 @@ This section details the command-line arguments available in `main.py` for custo
 
 #### **Model & GPU Arguments**
 
-  * `--model`: Hugging Face path for the **Target Model**. **Default:** `Qwen/Qwen3-32B`.
+  * `--model`: Hugging Face path for the **Target Model**. **Default:** `Qwen/Qwen3-14B`.
   * `--draft_model`: Hugging Face path for the **Draft Model**. **Default:** `Qwen/Qwen3-1.7B`.
   * `--judge_model`: Hugging Face path for the **Judge Model**. **Default:** `Qwen/Qwen2.5-7B-Instruct`.
   * `--judge_port`: Network port for the vLLM Judge model server. **Default:** `8000`.
   * `--target_gpu_id`: Comma-separated list of GPU IDs for the Target Model. **Default:** `0,1`.
   * `--draft_gpu_id`: GPU ID for the Draft Model. **Default:** `2`.
+  * `--target_dtype`: vLLM dtype for the Target Model. Use `auto` for FP8 weights.
+  * `--draft_dtype`: vLLM dtype for the Draft Model.
+  * `--target_quantization`: vLLM quantization backend for the Target Model (e.g., `bitsandbytes`, `awq`, `gptq`).
+  * `--draft_quantization`: vLLM quantization backend for the Draft Model.
 
 #### **Lookahead Reasoning (LR) Arguments**
 

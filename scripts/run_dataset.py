@@ -109,7 +109,8 @@ def parse_arguments():
     parser.add_argument('--method', type=str, default='llm-j', 
                     choices=['llm-j', 'emb', 'baseline'],
                     help='Method to run: llm-j (LLM Judge), emb (Embedding), baseline')
-    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', help='Model path')
+    parser.add_argument('--target_model', type=str, default='qwen3-14B', help='Target model path')
+    parser.add_argument('--draft_model', type=str, default='qwen3-1.7b', help='Draft model path')
     parser.add_argument('--judge_model', type=str, default='Qwen/Qwen2.5-7B-Instruct', help='Judge model path')
     parser.add_argument('--dataset', type=str, default='../data/aime-2024.jsonl', help='Dataset path')
     parser.add_argument('--prefix', type=str, default='judge', help='Prefix')
@@ -140,7 +141,7 @@ def initialize_tokenizer(args):
     """Initialize tokenizer if needed"""
     tokenizer = None
     if args.method == 'llm-j' or args.method == 'emb':
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.target_model)
     return tokenizer
 
 
@@ -211,16 +212,16 @@ def process_questions_parallel(questions, args, target_client, draft_client, jud
             while True: 
                 inp = inp + next_sentence
                 if args.method == 'llm-j':
-                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=target_client[0], model=args.model, method=args.method)
+                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=target_client[0], model=args.target_model, method=args.method)
                 elif args.method == 'emb':
-                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=target_client[0], model=args.model, method=args.method)
+                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=target_client[0], model=args.target_model, method=args.method)
                 generation_target.append(sentence_target)
 
                 if finish_reason == 'stop' and stop_reason != '\n\n':
                     next_sentence = sentence_target
                     generations.append(next_sentence)
                     break
-                sentence_draft, finish_reason_draft, stop_reason_draft = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=draft_client[0], model='deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B', method=args.method)
+                sentence_draft, finish_reason_draft, stop_reason_draft = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=draft_client[0], model=args.draft_model, method=args.method)
                 generation_draft.append(sentence_draft)
 
                 if args.method == 'llm-j':
@@ -279,7 +280,7 @@ def process_questions_parallel(questions, args, target_client, draft_client, jud
                     break
 
         elif args.method == 'baseline':
-            next_sentence, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=32000, client=target_client[0], model=args.model)
+            next_sentence, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=32000, client=target_client[0], model=args.target_model)
         
         inp = inp + next_sentence
         print('Done ', question_idx)
