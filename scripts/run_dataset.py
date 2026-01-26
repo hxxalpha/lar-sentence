@@ -102,6 +102,32 @@ Reasoning step 2 (s2):
 <end_s2><|im_end|>\n<|im_start|>assistant\n['''
 ]
 
+DEFAULT_STOP_SEQUENCES = [". ", "? ", "...", "\n"]
+
+
+def build_stop_sequences(args):
+    """Build stop sequences for sentence splitting."""
+    extra = args.extra_stop_seq or []
+    stop_sequences = DEFAULT_STOP_SEQUENCES + extra
+    seen = set()
+    deduped = []
+    for seq in stop_sequences:
+        if seq not in seen:
+            deduped.append(seq)
+            seen.add(seq)
+    return deduped
+
+
+def is_matched_stop(finish_reason, stop_reason, stop_sequences):
+    return finish_reason == 'stop' and stop_reason in stop_sequences
+
+
+def append_matched_stop(text, finish_reason, stop_reason, stop_sequences):
+    """Append matched stop sequence removed by the API."""
+    if is_matched_stop(finish_reason, stop_reason, stop_sequences):
+        return text + stop_reason
+    return text
+
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -121,6 +147,12 @@ def parse_arguments():
     parser.add_argument('--allow_no_stop', action='store_true', help='Allow no stop')
     parser.add_argument('--max_workers', type=int, default=20, help='Max workers')
     parser.add_argument('--max_samples', type=int, default=1, help='Max samples')
+    parser.add_argument(
+        '--extra-stop-seq',
+        action='append',
+        default=None,
+        help='Additional stop sequences for sentence splitting; can be repeated',
+    )
     return parser.parse_args()
 
 
@@ -187,10 +219,13 @@ def setup_embedding_model():
 
 
 def process_questions_parallel(questions, args, target_client, draft_client, judge_client, 
-                                tokenizer, output_dir, compute_similarity=None, equal_prompt=None):
+                                tokenizer, output_dir, compute_similarity=None, equal_prompt=None,
+                                stop_sequences=None):
     """Process questions in parallel using ThreadPoolExecutor"""
     temperature = 0.6
     results = []
+    if stop_sequences is None:
+        stop_sequences = DEFAULT_STOP_SEQUENCES
     
     def process_question(q, sample_idx, question_idx):
         if 'question' not in q:
@@ -212,16 +247,17 @@ def process_questions_parallel(questions, args, target_client, draft_client, jud
             while True: 
                 inp = inp + next_sentence
                 if args.method == 'llm-j':
-                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=target_client[0], model=args.target_model, method=args.method)
+                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=stop_sequences, client=target_client[0], model=args.target_model, method=args.method)
                 elif args.method == 'emb':
-                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=target_client[0], model=args.target_model, method=args.method)
+                    sentence_target, finish_reason, stop_reason = get_model_response(inp, temperature=temperature, max_tokens=100, stop=stop_sequences, client=target_client[0], model=args.target_model, method=args.method)
                 generation_target.append(sentence_target)
 
-                if finish_reason == 'stop' and stop_reason != '\n\n':
+                target_hit_stop = is_matched_stop(finish_reason, stop_reason, stop_sequences)
+                if finish_reason == 'stop' and not target_hit_stop:
                     next_sentence = sentence_target
                     generations.append(next_sentence)
                     break
-                sentence_draft, finish_reason_draft, stop_reason_draft = get_model_response(inp, temperature=temperature, max_tokens=100, stop=['\n\n'], client=draft_client[0], model=args.draft_model, method=args.method)
+                sentence_draft, finish_reason_draft, stop_reason_draft = get_model_response(inp, temperature=temperature, max_tokens=100, stop=stop_sequences, client=draft_client[0], model=args.draft_model, method=args.method)
                 generation_draft.append(sentence_draft)
 
                 if args.method == 'llm-j':
@@ -230,42 +266,30 @@ def process_questions_parallel(questions, args, target_client, draft_client, jud
 
                         print('xEqual: ', equal)
                         if '[aligned]' in equal and '[unaligned]' not in equal and finish_reason == 'stop' and finish_reason_draft == 'stop':
-                            next_sentence = sentence_draft 
-                            if finish_reason_draft == 'stop' and stop_reason_draft == '\n\n':
-                                next_sentence += '\n\n'
+                            next_sentence = append_matched_stop(sentence_draft, finish_reason_draft, stop_reason_draft, stop_sequences)
                             accepts.append(1)
                         else:
-                            next_sentence = sentence_target
-                            if finish_reason == 'stop' and stop_reason == '\n\n':
-                                next_sentence += '\n\n'
+                            next_sentence = append_matched_stop(sentence_target, finish_reason, stop_reason, stop_sequences)
                             accepts.append(0)
 
                     else:
                         equal, _, _ = get_model_response(equal_prompt.format(sentence_target.strip(), sentence_draft.strip()), temperature=0.0, max_tokens=1, client=judge_client[0], model=args.judge_model)
                         print('Equal: ', equal)
-                        if 'ali' in equal and 'un' not in equal and (args.allow_no_stop or (finish_reason == 'stop' and stop_reason == '\n\n')):
-                            next_sentence = sentence_draft 
-                            if finish_reason_draft == 'stop' and stop_reason_draft == '\n\n':
-                                next_sentence += '\n\n'
+                        if 'ali' in equal and 'un' not in equal and (args.allow_no_stop or target_hit_stop):
+                            next_sentence = append_matched_stop(sentence_draft, finish_reason_draft, stop_reason_draft, stop_sequences)
                             accepts.append(1)
                         else:
-                            next_sentence = sentence_target
-                            if finish_reason == 'stop' and stop_reason == '\n\n':
-                                next_sentence += '\n\n'
+                            next_sentence = append_matched_stop(sentence_target, finish_reason, stop_reason, stop_sequences)
                             accepts.append(0)
 
                 elif args.method == 'emb':
                     equal = compute_similarity(sentence_target.strip(), sentence_draft.strip()).item()
                     print('Equal: ', equal)
-                    if equal > args.threshold and (args.allow_no_stop or (finish_reason == 'stop' and stop_reason == '\n\n')):
-                        next_sentence = sentence_draft 
-                        if finish_reason_draft == 'stop' and stop_reason_draft == '\n\n':
-                            next_sentence += '\n\n'
+                    if equal > args.threshold and (args.allow_no_stop or target_hit_stop):
+                        next_sentence = append_matched_stop(sentence_draft, finish_reason_draft, stop_reason_draft, stop_sequences)
                         accepts.append(1)
                     else:
-                        next_sentence = sentence_target
-                        if finish_reason == 'stop' and stop_reason == '\n\n':
-                            next_sentence += '\n\n'
+                        next_sentence = append_matched_stop(sentence_target, finish_reason, stop_reason, stop_sequences)
                         accepts.append(0)
 
                 generations.append(next_sentence)
@@ -363,6 +387,7 @@ def calculate_and_save_accuracy(results, questions, output_dir):
 def main():
     """Main function to run dataset processing"""
     args = parse_arguments()
+    stop_sequences = build_stop_sequences(args)
     
     # Initialize clients
     target_client, draft_client, judge_client = initialize_clients(args)
@@ -389,7 +414,7 @@ def main():
     # Process questions in parallel
     results = process_questions_parallel(
         questions, args, target_client, draft_client, judge_client,
-        tokenizer, output_dir, compute_similarity, equal_prompt
+        tokenizer, output_dir, compute_similarity, equal_prompt, stop_sequences
     )
     
     # Calculate and save accuracy
