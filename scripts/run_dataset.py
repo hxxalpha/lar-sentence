@@ -228,6 +228,8 @@ def process_questions_parallel(questions, args, target_client, draft_client, jud
         stop_sequences = DEFAULT_STOP_SEQUENCES
     
     def process_question(q, sample_idx, question_idx):
+        start_ts = time.time()
+        start_time = datetime.datetime.now().isoformat(timespec="seconds")
         if 'question' not in q:
             q['question'] = q['problem']
         if 'id' not in q:
@@ -335,6 +337,11 @@ def process_questions_parallel(questions, args, target_client, draft_client, jud
                 'generations': generations,
                 'gold': q['answer'],
             }
+        end_ts = time.time()
+        end_time = datetime.datetime.now().isoformat(timespec="seconds")
+        output_data['start_time'] = start_time
+        output_data['end_time'] = end_time
+        output_data['elapsed_time_sec'] = end_ts - start_ts
         with open(output_dir + '/' + str(q["id"]) + '_' + str(sample_idx) + '.json', 'w') as f:
             json.dump(output_data, f, indent=2)
         print('Question: ', q['id'], 'answer:', extract_answer(inp, 'aime'), 'gold:', q['answer'], 'Spec: ', inp is None)
@@ -422,3 +429,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#python scripts/run_dataset.py --dataset data/aime-2024.jsonl --method llm-j  --target_model Qwen/Qwen3-14B --draft_model Qwen/Qwen3-1.7B --judge_model Qwen/Qwen2.5-7B-Instruct --max_workers 20 --start_qid 0 --end_qid 1
