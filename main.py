@@ -7,7 +7,7 @@ import argparse
 import random
 import json
 
-from vllm_model import Targeter, Drafter
+from vllm_model import Targeter, Drafter, RemoteTargeter, RemoteDrafter
 from lr import run_problem
 
 parser = argparse.ArgumentParser()
@@ -23,6 +23,11 @@ parser.add_argument('--model', type=str, default='Qwen/Qwen3-14B')
 parser.add_argument('--draft_model', type=str, default='Qwen/Qwen3-1.7B')
 parser.add_argument('--judge_model', type=str, default='Qwen/Qwen2.5-7B-Instruct')
 parser.add_argument('--judge_port', type=int, default=8000)
+parser.add_argument('--target_port', type=int, default=12347)
+parser.add_argument('--draft_port', type=int, default=12345)
+parser.add_argument('--target_host', type=str, default='127.0.0.1')
+parser.add_argument('--draft_host', type=str, default='127.0.0.1')
+parser.add_argument('--use_local_vllm', action='store_true')
 
 parser.add_argument('--target_gpu_id', type=str, default='0,1')
 parser.add_argument('--draft_gpu_id', type=str, default='2')
@@ -126,19 +131,27 @@ async def main():
     target_config = get_model_config(args.model)
     draft_config = get_model_config(args.draft_model)
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.target_gpu_id
-    # Set environment variables for GPU usage
-    target_quantization = resolve_quantization(args.model, args.target_quantization)
-    draft_quantization = resolve_quantization(args.draft_model, args.draft_quantization)
-    target_dtype = resolve_dtype(args.model, args.target_dtype, "float16")
-    draft_dtype = resolve_dtype(args.draft_model, args.draft_dtype, "float16")
+    if args.use_local_vllm:
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.target_gpu_id
+        # Set environment variables for GPU usage
+        target_quantization = resolve_quantization(args.model, args.target_quantization)
+        draft_quantization = resolve_quantization(args.draft_model, args.draft_quantization)
+        target_dtype = resolve_dtype(args.model, args.target_dtype, "float16")
+        draft_dtype = resolve_dtype(args.draft_model, args.draft_dtype, "float16")
 
-    target_model = Targeter(args.model, eos_id=target_config['eos_id'], target_gpu_id=args.target_gpu_id,
-                    enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max, 'dtype': target_dtype, 'quantization': target_quantization}) 
+        target_model = Targeter(args.model, eos_id=target_config['eos_id'], target_gpu_id=args.target_gpu_id,
+                        enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max, 'dtype': target_dtype, 'quantization': target_quantization}) 
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.draft_gpu_id
-    draft_model = Drafter(args.draft_model, eos_id=draft_config['eos_id'], draft_gpu_id=args.draft_gpu_id,
-                    enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max, 'dtype': draft_dtype, 'quantization': draft_quantization})
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.draft_gpu_id
+        draft_model = Drafter(args.draft_model, eos_id=draft_config['eos_id'], draft_gpu_id=args.draft_gpu_id,
+                        enable_n_gram=args.enable_n_gram, vllm_config={'force_eager': False, 'num_speculative_tokens': args.num_speculative_tokens, 'prompt_lookup_max': args.prompt_lookup_max, 'dtype': draft_dtype, 'quantization': draft_quantization})
+    else:
+        target_base_url = f"http://{args.target_host}:{args.target_port}/v1"
+        draft_base_url = f"http://{args.draft_host}:{args.draft_port}/v1"
+        target_model = RemoteTargeter(args.model, tokenizer=target_tokenizer, base_url=target_base_url,
+                                      eos_id=target_config['eos_id'], enable_n_gram=args.enable_n_gram)
+        draft_model = RemoteDrafter(args.draft_model, tokenizer=draft_tokenizer, base_url=draft_base_url,
+                                    eos_id=draft_config['eos_id'], enable_n_gram=args.enable_n_gram)
 
 
     assert target_config['name'] == draft_config['name'], \
