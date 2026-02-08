@@ -5,27 +5,48 @@ import os
 import time
 
 class MainNode:
-    def __init__(self, targeter=None, target_config=None, target2draft=None):
+    def __init__(self, targeter=None, target_config=None, target2draft=None, ignore_half_sentence=True):
         self.targeter = targeter
         self.task = None
         self.last_ending = None
         self.target_config = target_config
         self.target2draft = target2draft
+        self.ignore_half_sentence = ignore_half_sentence
 
-    def target(self, prefix_token_ids=None, last_ending=None):
-        self.last_ending = last_ending
+    def target(self, prefix_token_ids=None):
         self.prefix_token_ids = prefix_token_ids
-        self.task = asyncio.create_task(self.targeter.target(prefix_token_ids, temperature=self.target_config['temperature'], \
-                                                      top_p=self.target_config['top_p'], max_tokens=self.target_config['step_tokens'], \
-                                                      stop=self.target_config['stop'], top_k=self.target_config['top_k']))
+        async def _run_with_timing():
+            started_at = time.time()
+            response = await self.targeter.target(
+                prefix_token_ids,
+                temperature=self.target_config['temperature'],
+                top_p=self.target_config['top_p'],
+                max_tokens=self.target_config['step_tokens'],
+                stop=self.target_config['stop'],
+                top_k=self.target_config['top_k'],
+            )
+            ended_at = time.time()
+            return response, started_at, ended_at
+
+        self.task = asyncio.create_task(_run_with_timing())
 
     def done(self):
         return self.task.done()
     
     async def materialize(self):
-        response, stop_reason, matched_stop, num_tokens, token_ids = await self.task
+        task_output, started_at, ended_at = await self.task
+        response, stop_reason, matched_stop, num_tokens, token_ids = task_output
+        if not self.ignore_half_sentence:
+            last_ending = True
+        else:
+            stop_sequences = self.target_config.get('stop') or []
+            last_ending = any(
+                response.endswith(stop_seq) or matched_stop == stop_seq
+                for stop_seq in stop_sequences
+            )
         return {'t': response, 'r': stop_reason, 's': matched_stop, 'n': num_tokens, 
-                'i': token_ids, 'l': self.last_ending, 'di': self.target2draft(token_ids)}
+                'i': token_ids, 'l': last_ending, 'di': self.target2draft(token_ids),
+                'start_time': started_at, 'end_time': ended_at, 'elapsed_s': ended_at - started_at}
     
     def cancel(self):
         if self.task is not None:
@@ -42,9 +63,20 @@ class DrafterNode:
     def draft(self):
         if self.drafter == 'empty':
             return
-        self.task = asyncio.create_task(self.drafter.draft(self.draft_prefix_token_ids, temperature=self.draft_config['temperature'], \
-                                                      top_p=self.draft_config['top_p'], max_tokens=self.draft_config['step_tokens'], \
-                                                      stop=self.draft_config['stop'], top_k=self.draft_config['top_k'])) 
+        async def _run_with_timing():
+            started_at = time.time()
+            response = await self.drafter.draft(
+                self.draft_prefix_token_ids,
+                temperature=self.draft_config['temperature'],
+                top_p=self.draft_config['top_p'],
+                max_tokens=self.draft_config['step_tokens'],
+                stop=self.draft_config['stop'],
+                top_k=self.draft_config['top_k'],
+            )
+            ended_at = time.time()
+            return response, started_at, ended_at
+
+        self.task = asyncio.create_task(_run_with_timing())
     
 
     def done(self):
@@ -54,9 +86,11 @@ class DrafterNode:
     
     async def materialize(self):
         if self.drafter == 'empty':
-            return {'t': '', 'r': None, 's': None, 'n': 0, 'i': [], 'ti':[], 'j': None}
-        response, stop_reason, matched_stop, num_tokens, token_ids = await self.task
-        return {'t': response, 'r': stop_reason, 's': matched_stop, 'n': num_tokens, 'i': token_ids, 'ti':self.draft2target(token_ids), 'j': None}
+            return {'t': '', 'r': None, 's': None, 'n': 0, 'i': [], 'ti':[], 'j': None, 'start_time': None, 'end_time': None, 'elapsed_s': 0.0}
+        task_output, started_at, ended_at = await self.task
+        response, stop_reason, matched_stop, num_tokens, token_ids = task_output
+        return {'t': response, 'r': stop_reason, 's': matched_stop, 'n': num_tokens, 'i': token_ids, 'ti':self.draft2target(token_ids), 'j': None,
+                'start_time': started_at, 'end_time': ended_at, 'elapsed_s': ended_at - started_at}
         # return response, stop_reason, matched_stop, num_tokens, token_ids, None
     
     def cancel(self):
@@ -87,7 +121,7 @@ class TreeNode:
         self.children = []
         self.canceled = []
         self.base = DrafterNode(draft_prefix_token_ids=draft_prefix_token_ids, drafter=drafter if not empty else 'empty', draft_config=draft_config, draft2target=draft2target)
-        self.main = MainNode(targeter=targeter, target_config=target_config, target2draft=target2draft)
+        self.main = MainNode(targeter=targeter, target_config=target_config, target2draft=target2draft, ignore_half_sentence=ignore_half_sentence)
         self.draft()
         self.qid = qid
         self.ignore_half_sentence = ignore_half_sentence
@@ -112,8 +146,7 @@ class TreeNode:
         return self.main.task is not None
 
     def target(self):
-        self.main.target(self.prefix_token_ids + self.drafter_data['ti'],\
-                            (self.prefix + self.drafter_data['t']).endswith("\n\n") or not self.ignore_half_sentence)
+        self.main.target(self.prefix_token_ids + self.drafter_data['ti'])
     
     def check_base(self):
         return self.base.done()
@@ -165,7 +198,36 @@ class TreeNode:
         if self.main_data is not None:
             for child in self.children:
                 if child is not None and child.drafter_data is not None and child.drafter_data['j'] is None:
-                    child.drafter_data['j'] = asyncio.create_task(self.accept_func(self.main_data['t'], child.drafter_data['t'], self.main_data['l'], self.judge_client, self.judge_model))
+                    async def _judge_with_timing(main_text, draft_text, last_ending):
+                        started_at = time.time()
+                        try:
+                            judge_output = await self.accept_func(
+                                main_text,
+                                draft_text,
+                                last_ending,
+                                self.judge_client,
+                                self.judge_model,
+                            )
+                        except Exception as e:
+                            judge_output = {
+                                'accepted': False,
+                                'judge_response': None,
+                                'reason': 'judge_exception',
+                                'error': f"{type(e).__name__}: {e}",
+                            }
+                        ended_at = time.time()
+                        if isinstance(judge_output, dict):
+                            result = dict(judge_output)
+                        else:
+                            result = {'accepted': bool(judge_output), 'judge_response': str(judge_output), 'reason': 'legacy_bool'}
+                        result['start_time'] = started_at
+                        result['end_time'] = ended_at
+                        result['elapsed_s'] = ended_at - started_at
+                        return result
+
+                    child.drafter_data['j'] = asyncio.create_task(
+                        _judge_with_timing(self.main_data['t'], child.drafter_data['t'], self.main_data['l'])
+                    )
 
         for child in self.children:
             await child.travel_set_accepted()
@@ -192,4 +254,3 @@ class TreeNode:
             pass
         for child in self.children:
             await child.traverse_collect_main()
-

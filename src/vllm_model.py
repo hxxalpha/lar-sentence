@@ -10,6 +10,8 @@ import inspect
 from openai import AsyncOpenAI
 from transformers import AutoTokenizer
 
+DEFAULT_STOP_SEQUENCES = [". ", "? ", "...", "\n"]
+
 class LLMModel:
     def __init__(self, model, eos_id=None, gpu_ids="", enable_n_gram=False,  vllm_config={}):
         self.gpu_ids = gpu_ids
@@ -86,9 +88,11 @@ class LLMModel:
             if out.outputs[0].stop_reason is not None:
                 if out.outputs[0].stop_reason in self.eos_id:
                     return out.outputs[0].text + '<|endoftext|>', out.outputs[0].finish_reason, out.outputs[0].stop_reason, num_tokens, out.outputs[0].token_ids
-                if self.enable_n_gram:
-                    out.outputs[0].token_ids = self.tokenizer.encode(out.outputs[0].text + out.outputs[0].stop_reason)
-                return out.outputs[0].text + out.outputs[0].stop_reason, out.outputs[0].finish_reason, out.outputs[0].stop_reason, num_tokens, out.outputs[0].token_ids
+                completion_with_stop = out.outputs[0].text + out.outputs[0].stop_reason
+                # Some backends strip the matched stop from token_ids; re-tokenize
+                # the returned text so num_tokens/prefix growth stays consistent.
+                token_ids_with_stop = self.tokenizer.encode(completion_with_stop, add_special_tokens=False)
+                return completion_with_stop, out.outputs[0].finish_reason, out.outputs[0].stop_reason, len(token_ids_with_stop), token_ids_with_stop
             else:
                 print('Finishing: ', out.outputs[0].finish_reason, out.outputs[0].stop_reason, self.eos_id)
                 return out.outputs[0].text, out.outputs[0].finish_reason, out.outputs[0].stop_reason, num_tokens, out.outputs[0].token_ids
@@ -144,10 +148,9 @@ class RemoteLLMModel:
         if finish_reason == 'stop' and stop_reason is not None:
             if stop_reason in self.eos_id:
                 return completion_text + '<|endoftext|>', finish_reason, stop_reason, num_tokens, token_ids
-            if self.enable_n_gram:
-                token_ids = self.tokenizer.encode(completion_text + stop_reason, add_special_tokens=False)
-                num_tokens = len(token_ids)
-            return completion_text + stop_reason, finish_reason, stop_reason, num_tokens, token_ids
+            completion_with_stop = completion_text + stop_reason
+            token_ids_with_stop = self.tokenizer.encode(completion_with_stop, add_special_tokens=False)
+            return completion_with_stop, finish_reason, stop_reason, len(token_ids_with_stop), token_ids_with_stop
 
         return completion_text, finish_reason, stop_reason, num_tokens, token_ids
 
@@ -158,7 +161,9 @@ class Drafter:
         print('Drafting')
         self.model = LLMModel(model, eos_id, draft_gpu_id, enable_n_gram, vllm_config)
         
-    def draft(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=['\n\n']):
+    def draft(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=None):
+        if stop is None:
+            stop = DEFAULT_STOP_SEQUENCES
         return self.model.generate(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k, stop=stop)
 
 
@@ -168,7 +173,9 @@ class RemoteDrafter:
         print('Drafting (remote)')
         self.model = RemoteLLMModel(model, tokenizer, base_url, eos_id=eos_id, enable_n_gram=enable_n_gram, timeout=timeout)
 
-    def draft(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=['\n\n']):
+    def draft(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=None):
+        if stop is None:
+            stop = DEFAULT_STOP_SEQUENCES
         return self.model.generate(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k, stop=stop)
 
 ### Target Model 
@@ -178,7 +185,9 @@ class Targeter:
         print('Targeting')
         self.model = LLMModel(model, eos_id, target_gpu_id, enable_n_gram, vllm_config)
         
-    def target(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=['\n\n']):
+    def target(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=None):
+        if stop is None:
+            stop = DEFAULT_STOP_SEQUENCES
         return self.model.generate(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k, stop=stop)
 
 
@@ -188,5 +197,7 @@ class RemoteTargeter:
         print('Targeting (remote)')
         self.model = RemoteLLMModel(model, tokenizer, base_url, eos_id=eos_id, enable_n_gram=enable_n_gram, timeout=timeout)
         
-    def target(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=['\n\n']):
+    def target(self, prompt, max_tokens=100, temperature=0.6, top_p=0.95, top_k=20, stop=None):
+        if stop is None:
+            stop = DEFAULT_STOP_SEQUENCES
         return self.model.generate(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k, stop=stop)

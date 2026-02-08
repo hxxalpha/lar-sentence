@@ -47,6 +47,7 @@ args = parser.parse_args()
 
 judge_client = openai.AsyncOpenAI(base_url=f"http://127.0.0.1:{args.judge_port}/v1", api_key="None", timeout=None)
 
+DEFAULT_STOP_SEQUENCES = [". ", "? ", "...", "\n"]
 
 MODEL_CONFIGS = {
     'deepseek': {
@@ -57,7 +58,7 @@ MODEL_CONFIGS = {
         'max_tokens': 32768,
         'prompt_template': 'deepseek',
         'eos_id': [151643, 151645],
-        'stop': ['\n\n'],
+        'stop': list(DEFAULT_STOP_SEQUENCES),
         'step_tokens': 100,
     },
     'qwen3': {
@@ -68,7 +69,7 @@ MODEL_CONFIGS = {
         'max_tokens': 38912,
         'prompt_template': 'qwen3',
         'eos_id': [151643, 151645],
-        'stop': ['\n\n'],
+        'stop': list(DEFAULT_STOP_SEQUENCES),
         'step_tokens': 100,
     }
 }
